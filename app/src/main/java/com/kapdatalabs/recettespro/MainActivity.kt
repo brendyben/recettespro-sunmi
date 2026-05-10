@@ -3,6 +3,8 @@ package com.kapdatalabs.recettespro
 import android.annotation.SuppressLint
 import android.app.AlertDialog
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.RemoteException
 import android.util.Log
 import android.webkit.JavascriptInterface
@@ -21,18 +23,57 @@ import org.json.JSONObject
 class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
-    private var printerService: SunmiPrinterService? = null
+    @Volatile private var printerService: SunmiPrinterService? = null
+    private var bindAttempts = 0
 
     private val printerCallback = object : InnerPrinterCallback() {
         override fun onConnected(service: SunmiPrinterService) {
             printerService = service
-            Log.i(TAG, "Printer connected")
+            Log.i(TAG, "Printer CONNECTED")
         }
 
         override fun onDisconnected() {
             printerService = null
-            Log.i(TAG, "Printer disconnected")
+            Log.i(TAG, "Printer DISCONNECTED - will rebind on next print")
         }
+    }
+
+    /** Bind to Sunmi printer service. Retries automatically if it fails. */
+    private fun bindPrinter() {
+        try {
+            val ok = InnerPrinterManager.getInstance().bindService(this, printerCallback)
+            Log.i(TAG, "bindService attempt ${bindAttempts + 1} returned $ok")
+            if (!ok && bindAttempts < 5) {
+                bindAttempts++
+                Handler(Looper.getMainLooper()).postDelayed({ bindPrinter() }, 1000L)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "bindPrinter failed", e)
+            if (bindAttempts < 5) {
+                bindAttempts++
+                Handler(Looper.getMainLooper()).postDelayed({ bindPrinter() }, 1000L)
+            }
+        }
+    }
+
+    /** Ensure we have a printer connection. Try to bind if not. Waits briefly. */
+    private fun ensurePrinterReady(): SunmiPrinterService? {
+        if (printerService != null) return printerService
+
+        // Try to bind right now
+        try {
+            InnerPrinterManager.getInstance().bindService(this, printerCallback)
+        } catch (e: Exception) {
+            Log.e(TAG, "ensurePrinterReady bind failed", e)
+        }
+
+        // Wait up to 2 seconds for the binding to complete
+        val start = System.currentTimeMillis()
+        while (printerService == null && (System.currentTimeMillis() - start) < 2000) {
+            try { Thread.sleep(50) } catch (_: InterruptedException) {}
+        }
+
+        return printerService
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -40,12 +81,8 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        // Bind to Sunmi printer service
-        try {
-            InnerPrinterManager.getInstance().bindService(this, printerCallback)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to bind printer service", e)
-        }
+        // Start binding to Sunmi printer service (with retries)
+        bindPrinter()
 
         webView = findViewById(R.id.webview)
         val settings: WebSettings = webView.settings
@@ -60,7 +97,7 @@ class MainActivity : AppCompatActivity() {
 
         webView.webViewClient = WebViewClient()
 
-        // Permet à window.alert(), confirm(), prompt() de s'afficher comme dialogues Android
+        // Allow window.alert / confirm / prompt to show as Android dialogs
         webView.webChromeClient = object : WebChromeClient() {
             override fun onJsAlert(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
                 AlertDialog.Builder(this@MainActivity)
@@ -89,6 +126,15 @@ class MainActivity : AppCompatActivity() {
         webView.loadUrl("https://rpro.bakapdatalabs.com")
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Re-attempt binding when app comes back to foreground
+        if (printerService == null) {
+            bindAttempts = 0
+            bindPrinter()
+        }
+    }
+
     override fun onBackPressed() {
         if (webView.canGoBack()) {
             webView.goBack()
@@ -110,11 +156,14 @@ class MainActivity : AppCompatActivity() {
     inner class SunmiPrintBridge {
 
         @JavascriptInterface
-        fun isAvailable(): Boolean = printerService != null
+        fun isAvailable(): Boolean {
+            // Try to ensure the service is ready when JS asks
+            return ensurePrinterReady() != null
+        }
 
         @JavascriptInterface
         fun printTicket(jsonString: String): String {
-            val service = printerService ?: return "ERROR: printer not connected"
+            val service = ensurePrinterReady() ?: return "ERROR: printer not connected"
 
             return try {
                 val ticket = JSONObject(jsonString)
@@ -129,29 +178,23 @@ class MainActivity : AppCompatActivity() {
                 val montant = ticket.optString("montant", "")
                 val libelle = ticket.optString("libelle", "Montant collecté")
 
-                // Reset printer
                 service.printerInit(null)
 
-                // ===== HEADER =====
-                service.setAlignment(1, null) // 0=left 1=center 2=right
+                service.setAlignment(1, null)
                 if (titre.isNotEmpty()) {
-                    service.setFontSize(24f, null)
                     service.printTextWithFont(titre + "\n", null, 24f, null)
                 }
                 service.lineWrap(1, null)
 
-                // ===== NUMERO =====
                 if (numero.isNotEmpty()) {
                     service.setAlignment(1, null)
                     service.printTextWithFont(numero + "\n", null, 30f, null)
                 }
                 service.lineWrap(1, null)
 
-                // ===== SEPARATEUR =====
                 service.setAlignment(0, null)
                 service.printText("--------------------------------\n", null)
 
-                // ===== INFOS (label droite + valeur à droite, tableau 2 colonnes) =====
                 service.setFontSize(24f, null)
                 printRow(service, "Agent", agent)
                 printRow(service, "Commune", commune)
@@ -162,19 +205,16 @@ class MainActivity : AppCompatActivity() {
                 service.printText("--------------------------------\n", null)
                 service.lineWrap(1, null)
 
-                // ===== MONTANT =====
                 service.setAlignment(1, null)
                 service.printTextWithFont(montant + "\n", null, 42f, null)
                 service.setFontSize(20f, null)
                 service.printTextWithFont(libelle + "\n", null, 20f, null)
 
-                // ===== FOOTER =====
                 service.lineWrap(2, null)
                 service.setAlignment(1, null)
                 service.printTextWithFont("Merci !\n", null, 22f, null)
                 service.lineWrap(4, null)
 
-                // Cut paper if device supports it (V2s does not have a cutter, so this is harmless)
                 try { service.cutPaper(null) } catch (_: Exception) {}
 
                 "OK"
@@ -189,7 +229,7 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun printRaw(text: String): String {
-            val service = printerService ?: return "ERROR: printer not connected"
+            val service = ensurePrinterReady() ?: return "ERROR: printer not connected"
             return try {
                 service.printerInit(null)
                 service.printText(text, null)
@@ -208,7 +248,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** Print a row with label on the left and value on the right, padded to 32 chars (58mm = 32 chars) */
     private fun printRow(service: SunmiPrinterService, label: String, value: String) {
         if (value.isEmpty()) return
         val totalWidth = 32
