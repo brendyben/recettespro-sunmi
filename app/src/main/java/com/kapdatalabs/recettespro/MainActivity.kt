@@ -58,7 +58,7 @@ class MainActivity : AppCompatActivity() {
         webView.webViewClient = WebViewClient()
         webView.addJavascriptInterface(SunmiPrintBridge(), "SunmiPrint")
 
-        webView.loadUrl("https://kapdatalabs.com")
+        webView.loadUrl("https://rpro.bakapdatalabs.com")
     }
 
     override fun onBackPressed() {
