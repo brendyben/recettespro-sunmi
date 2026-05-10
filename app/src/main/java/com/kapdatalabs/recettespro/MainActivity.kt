@@ -1,10 +1,13 @@
 package com.kapdatalabs.recettespro
 
 import android.annotation.SuppressLint
+import android.app.AlertDialog
 import android.os.Bundle
 import android.os.RemoteException
 import android.util.Log
 import android.webkit.JavascriptInterface
+import android.webkit.JsResult
+import android.webkit.WebChromeClient
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -56,6 +59,31 @@ class MainActivity : AppCompatActivity() {
         settings.allowContentAccess = true
 
         webView.webViewClient = WebViewClient()
+
+        // Permet à window.alert(), confirm(), prompt() de s'afficher comme dialogues Android
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onJsAlert(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle("RecettesPro")
+                    .setMessage(message)
+                    .setPositiveButton("OK") { _, _ -> result?.confirm() }
+                    .setCancelable(false)
+                    .show()
+                return true
+            }
+
+            override fun onJsConfirm(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
+                AlertDialog.Builder(this@MainActivity)
+                    .setTitle("RecettesPro")
+                    .setMessage(message)
+                    .setPositiveButton("OK") { _, _ -> result?.confirm() }
+                    .setNegativeButton("Annuler") { _, _ -> result?.cancel() }
+                    .setCancelable(false)
+                    .show()
+                return true
+            }
+        }
+
         webView.addJavascriptInterface(SunmiPrintBridge(), "SunmiPrint")
 
         webView.loadUrl("https://rpro.bakapdatalabs.com")
