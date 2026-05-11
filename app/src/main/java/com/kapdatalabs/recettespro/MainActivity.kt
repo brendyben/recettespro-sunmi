@@ -3,9 +3,6 @@ package com.kapdatalabs.recettespro
 import android.annotation.SuppressLint
 import android.app.AlertDialog
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
-import android.os.RemoteException
 import android.util.Log
 import android.webkit.JavascriptInterface
 import android.webkit.JsResult
@@ -15,74 +12,36 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import com.sunmi.peripheral.printer.InnerPrinterCallback
-import com.sunmi.peripheral.printer.InnerPrinterManager
-import com.sunmi.peripheral.printer.SunmiPrinterService
+import com.sunmi.printerx.PrinterSdk
+import com.sunmi.printerx.SdkCallback
+import com.sunmi.printerx.enums.Align
 import org.json.JSONObject
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
-    @Volatile private var printerService: SunmiPrinterService? = null
-    private var bindAttempts = 0
-
-    private val printerCallback = object : InnerPrinterCallback() {
-        override fun onConnected(service: SunmiPrinterService) {
-            printerService = service
-            Log.i(TAG, "Printer CONNECTED")
-        }
-
-        override fun onDisconnected() {
-            printerService = null
-            Log.i(TAG, "Printer DISCONNECTED - will rebind on next print")
-        }
-    }
-
-    /** Bind to Sunmi printer service. Retries automatically if it fails. */
-    private fun bindPrinter() {
-        try {
-            val ok = InnerPrinterManager.getInstance().bindService(this, printerCallback)
-            Log.i(TAG, "bindService attempt ${bindAttempts + 1} returned $ok")
-            if (!ok && bindAttempts < 5) {
-                bindAttempts++
-                Handler(Looper.getMainLooper()).postDelayed({ bindPrinter() }, 1000L)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "bindPrinter failed", e)
-            if (bindAttempts < 5) {
-                bindAttempts++
-                Handler(Looper.getMainLooper()).postDelayed({ bindPrinter() }, 1000L)
-            }
-        }
-    }
-
-    /** Ensure we have a printer connection. Try to bind if not. Waits briefly. */
-    private fun ensurePrinterReady(): SunmiPrinterService? {
-        if (printerService != null) return printerService
-
-        // Try to bind right now
-        try {
-            InnerPrinterManager.getInstance().bindService(this, printerCallback)
-        } catch (e: Exception) {
-            Log.e(TAG, "ensurePrinterReady bind failed", e)
-        }
-
-        // Wait up to 2 seconds for the binding to complete
-        val start = System.currentTimeMillis()
-        while (printerService == null && (System.currentTimeMillis() - start) < 2000) {
-            try { Thread.sleep(50) } catch (_: InterruptedException) {}
-        }
-
-        return printerService
-    }
+    @Volatile private var printer: PrinterSdk.Printer? = null
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        // Start binding to Sunmi printer service (with retries)
-        bindPrinter()
+        // Initialize the modern Sunmi PrinterX SDK
+        try {
+            PrinterSdk.getInstance().getPrinter(this, object : SdkCallback {
+                override fun onConnect(p: PrinterSdk.Printer?) {
+                    printer = p
+                    Log.i(TAG, "PrinterX: connected, printer=" + (p != null))
+                }
+
+                override fun onFailed(p: PrinterSdk.Printer?, errorCode: Int, msg: String?) {
+                    Log.e(TAG, "PrinterX: failed code=$errorCode msg=$msg")
+                }
+            })
+        } catch (e: Exception) {
+            Log.e(TAG, "PrinterX init failed", e)
+        }
 
         webView = findViewById(R.id.webview)
         val settings: WebSettings = webView.settings
@@ -97,7 +56,6 @@ class MainActivity : AppCompatActivity() {
 
         webView.webViewClient = WebViewClient()
 
-        // Allow window.alert / confirm / prompt to show as Android dialogs
         webView.webChromeClient = object : WebChromeClient() {
             override fun onJsAlert(view: WebView?, url: String?, message: String?, result: JsResult?): Boolean {
                 AlertDialog.Builder(this@MainActivity)
@@ -126,15 +84,6 @@ class MainActivity : AppCompatActivity() {
         webView.loadUrl("https://rpro.bakapdatalabs.com")
     }
 
-    override fun onResume() {
-        super.onResume()
-        // Re-attempt binding when app comes back to foreground
-        if (printerService == null) {
-            bindAttempts = 0
-            bindPrinter()
-        }
-    }
-
     override fun onBackPressed() {
         if (webView.canGoBack()) {
             webView.goBack()
@@ -143,84 +92,62 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    override fun onDestroy() {
-        try {
-            InnerPrinterManager.getInstance().unBindService(this, printerCallback)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to unbind printer service", e)
-        }
-        super.onDestroy()
-    }
-
-    /** JavaScript-callable bridge exposed as window.SunmiPrint */
     inner class SunmiPrintBridge {
 
         @JavascriptInterface
-        fun isAvailable(): Boolean {
-            // Try to ensure the service is ready when JS asks
-            return ensurePrinterReady() != null
-        }
+        fun isAvailable(): Boolean = printer != null
 
         @JavascriptInterface
         fun printTicket(jsonString: String): String {
-            val service = ensurePrinterReady() ?: return "ERROR: printer not connected"
+            val p = printer ?: return "ERROR: printer not connected"
 
             return try {
                 val ticket = JSONObject(jsonString)
 
-                val titre = ticket.optString("titre", "")
-                val numero = ticket.optString("numero", "")
-                val agent = ticket.optString("agent", "")
+                val titre   = ticket.optString("titre", "")
+                val numero  = ticket.optString("numero", "")
+                val agent   = ticket.optString("agent", "")
                 val commune = ticket.optString("commune", "")
-                val marche = ticket.optString("marche", "")
-                val date = ticket.optString("date", "")
-                val heure = ticket.optString("heure", "")
+                val marche  = ticket.optString("marche", "")
+                val date    = ticket.optString("date", "")
+                val heure   = ticket.optString("heure", "")
                 val montant = ticket.optString("montant", "")
-                val libelle = ticket.optString("libelle", "Montant collecté")
+                val libelle = ticket.optString("libelle", "Montant collecte")
 
-                service.printerInit(null)
+                val lineApi = p.lineApi()
 
-                service.setAlignment(1, null)
+                // Titre
                 if (titre.isNotEmpty()) {
-                    service.printTextWithFont(titre + "\n", null, 24f, null)
+                    lineApi.initLine(com.sunmi.printerx.style.BaseStyle.getStyle().setAlign(Align.CENTER))
+                    lineApi.printText(titre, com.sunmi.printerx.style.TextStyle.getStyle().enableBold(true))
                 }
-                service.lineWrap(1, null)
 
+                // Numéro de ticket
                 if (numero.isNotEmpty()) {
-                    service.setAlignment(1, null)
-                    service.printTextWithFont(numero + "\n", null, 30f, null)
+                    lineApi.initLine(com.sunmi.printerx.style.BaseStyle.getStyle().setAlign(Align.CENTER))
+                    lineApi.printText(numero, com.sunmi.printerx.style.TextStyle.getStyle().setTextSize(30).enableBold(true))
                 }
-                service.lineWrap(1, null)
 
-                service.setAlignment(0, null)
-                service.printText("--------------------------------\n", null)
+                lineApi.printText("\n--------------------------------\n", null)
 
-                service.setFontSize(24f, null)
-                printRow(service, "Agent", agent)
-                printRow(service, "Commune", commune)
-                printRow(service, "Marche", marche)
-                printRow(service, "Date", date)
-                printRow(service, "Heure", heure)
+                // Infos en 2 colonnes
+                lineApi.initLine(com.sunmi.printerx.style.BaseStyle.getStyle().setAlign(Align.LEFT))
+                if (agent.isNotEmpty())   lineApi.printText(formatRow("Agent", agent) + "\n", null)
+                if (commune.isNotEmpty()) lineApi.printText(formatRow("Commune", commune) + "\n", null)
+                if (marche.isNotEmpty())  lineApi.printText(formatRow("Marche", marche) + "\n", null)
+                if (date.isNotEmpty())    lineApi.printText(formatRow("Date", date) + "\n", null)
+                if (heure.isNotEmpty())   lineApi.printText(formatRow("Heure", heure) + "\n", null)
 
-                service.printText("--------------------------------\n", null)
-                service.lineWrap(1, null)
+                lineApi.printText("--------------------------------\n\n", null)
 
-                service.setAlignment(1, null)
-                service.printTextWithFont(montant + "\n", null, 42f, null)
-                service.setFontSize(20f, null)
-                service.printTextWithFont(libelle + "\n", null, 20f, null)
+                // Montant
+                lineApi.initLine(com.sunmi.printerx.style.BaseStyle.getStyle().setAlign(Align.CENTER))
+                lineApi.printText(montant + "\n", com.sunmi.printerx.style.TextStyle.getStyle().setTextSize(42).enableBold(true))
+                lineApi.printText(libelle + "\n", com.sunmi.printerx.style.TextStyle.getStyle().setTextSize(20))
 
-                service.lineWrap(2, null)
-                service.setAlignment(1, null)
-                service.printTextWithFont("Merci !\n", null, 22f, null)
-                service.lineWrap(4, null)
-
-                try { service.cutPaper(null) } catch (_: Exception) {}
+                lineApi.printText("\n\nMerci !\n\n\n\n", null)
 
                 "OK"
-            } catch (e: RemoteException) {
-                Log.e(TAG, "Print failed", e)
-                "ERROR: " + e.message
             } catch (e: Exception) {
                 Log.e(TAG, "Print failed", e)
                 "ERROR: " + e.message
@@ -229,11 +156,9 @@ class MainActivity : AppCompatActivity() {
 
         @JavascriptInterface
         fun printRaw(text: String): String {
-            val service = ensurePrinterReady() ?: return "ERROR: printer not connected"
+            val p = printer ?: return "ERROR: printer not connected"
             return try {
-                service.printerInit(null)
-                service.printText(text, null)
-                service.lineWrap(4, null)
+                p.lineApi().printText(text + "\n\n\n", null)
                 "OK"
             } catch (e: Exception) {
                 "ERROR: " + e.message
@@ -248,18 +173,11 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun printRow(service: SunmiPrinterService, label: String, value: String) {
-        if (value.isEmpty()) return
+    private fun formatRow(label: String, value: String): String {
         val totalWidth = 32
-        val labelPart = label
-        val valuePart = value
-        val spaces = totalWidth - labelPart.length - valuePart.length
-        val line = if (spaces > 0) {
-            labelPart + " ".repeat(spaces) + valuePart
-        } else {
-            "$labelPart  $valuePart"
-        }
-        service.printText(line + "\n", null)
+        val spaces = totalWidth - label.length - value.length
+        return if (spaces > 0) label + " ".repeat(spaces) + value
+               else "$label  $value"
     }
 
     companion object {
