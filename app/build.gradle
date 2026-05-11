@@ -11,8 +11,8 @@ android {
         applicationId "com.kapdatalabs.recettespro"
         minSdk 21
         targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        versionCode 2
+        versionName "1.1"
     }
 
     buildTypes {
@@ -35,6 +35,8 @@ android {
 dependencies {
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.android.material:material:1.11.0'
-    // Sunmi printer SDK
+
+    // Both Sunmi SDKs - the OLD one for the AIDL service, the NEW one for modern API
+    implementation 'com.sunmi:printerx:1.0.18'
     implementation 'com.sunmi:printerlibrary:1.0.14'
 }
