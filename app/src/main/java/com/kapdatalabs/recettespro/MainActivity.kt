@@ -13,7 +13,6 @@ import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.sunmi.printerx.PrinterSdk
-import com.sunmi.printerx.SdkCallback
 import com.sunmi.printerx.enums.Align
 import org.json.JSONObject
 
