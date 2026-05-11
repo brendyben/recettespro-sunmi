@@ -29,14 +29,17 @@ class MainActivity : AppCompatActivity() {
 
         // Initialize the modern Sunmi PrinterX SDK
         try {
-            PrinterSdk.getInstance().getPrinter(this, object : SdkCallback {
-                override fun onConnect(p: PrinterSdk.Printer?) {
+            PrinterSdk.getInstance().getPrinter(this, object : PrinterSdk.PrinterListen {
+                override fun onDefPrinter(p: PrinterSdk.Printer?) {
                     printer = p
-                    Log.i(TAG, "PrinterX: connected, printer=" + (p != null))
+                    Log.i(TAG, "PrinterX: default printer connected, printer=" + (p != null))
                 }
 
-                override fun onFailed(p: PrinterSdk.Printer?, errorCode: Int, msg: String?) {
-                    Log.e(TAG, "PrinterX: failed code=$errorCode msg=$msg")
+                override fun onPrinters(list: MutableList<PrinterSdk.Printer>?) {
+                    Log.i(TAG, "PrinterX: printers list size=" + (list?.size ?: 0))
+                    if (printer == null && list != null && list.isNotEmpty()) {
+                        printer = list[0]
+                    }
                 }
             })
         } catch (e: Exception) {
